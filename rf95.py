@@ -17,6 +17,7 @@
 # along with this program.
 # If not, see <http://www.gnu.org/licenses/>.
 
+
 # TODO:
 # - change constants to Enum members where appropriate
 # - use threading.Condition instead of busy loops
@@ -48,6 +49,7 @@ REG_09_PA_CONFIG = 0x09
 REG_0A_PA_RAMP = 0x0a
 REG_0B_OCP = 0x0b
 REG_0C_LNA = 0x0c
+REG_00_FIFO_ADDR_PTR = 0x00
 REG_0D_FIFO_ADDR_PTR = 0x0d
 REG_0E_FIFO_TX_BASE_ADDR = 0x0e
 REG_0F_FIFO_RX_BASE_ADDR = 0x0f
@@ -215,12 +217,36 @@ PA_DAC_ENABLE = 0x07
 
 MAX_MESSAGE_LEN = 255
 
+
+# BEST WORKING PARAMETER ON LONG RANGE WITH SURFACE ANTENNA Bw125Cr48Sf1024noagc - AES
 # default params
 Bw125Cr45Sf128 = (0x72, 0x74, 0x00)
 Bw500Cr45Sf128 = (0x92, 0x74, 0x00)
 Bw31_25Cr48Sf512 = (0x48, 0x94, 0x00)
 Bw125Cr48Sf4096 = (0x78, 0xc4, 0x00)
+Bw125Cr48Sf512 = (0x78, 0x94, 0x04)
+Bw125Cr48Sf1024 = (0x78, 0xA4, 0x04)
+Bw125Cr48Sf2048 = (0x78, 0xB4, 0x04) 
+Bw31_25Cr48Sf256 = (0x48, 0x84, 0x04) 
+Bw125Cr48Sf1024noagc = (0x78, 0xA4, 0x00) 
 
+'''
+PROGMEM static const RH_RF95::ModemConfig MODEM_CONFIG_TABLE[] =
+{
+    //  1d,     1e,      26
+    { 0x72,   0x74,    0x04}, // Bw125Cr45Sf128 (the chip default), AGC enabled
+    { 0x92,   0x74,    0x04}, // Bw500Cr45Sf128, AGC enabled
+    { 0x48,   0x94,    0x04}, // Bw31_25Cr48Sf512, AGC enabled
+    { 0x78,   0xc4,    0x0c}, // Bw125Cr48Sf4096, AGC enabled
+    { 0x78,   0x94,    0x04}, // Bw125Cr48Sf512, AGC enabled - SF=9, BW=125
+	{ 0x78,   0xA4,    0x04}, // Bw125Cr48Sf1024, AGC enabled - SF = 10, BW=125
+    { 0x78,   0xB4,    0x04}, // Bw125Cr48Sf2048, AGC enabled - SF = 11, BW=125
+	{ 0x48,   0x84,    0x04}, // Bw31_25Cr48Sf256, AGC enabled - SF = 8, BW=31.25
+	{ 0x78,   0xA4,    0x00}, // Bw125Cr48Sf1024noagc, AGC disabled - SF = 10, BW=125
+   
+};
+'''
+    
 # SPI
 SPI_WRITE_MASK = 0x80
 
@@ -232,9 +258,12 @@ RADIO_MODE_TX = 3
 RADIO_MODE_RX = 4
 RADIO_MODE_CAD = 5
 
+#AES INSERTED
+RH_BROADCAST_ADDRESS = 0xff
+RH_RF95_HEADER_LEN = 4
 
 class RF95:
-    def __init__(self, cs=0, int_pin=25, reset_pin=None):
+    def __init__(self, cs=0, int_pin=25, reset_pin=None, address=0,promiscuousMode=False):
         # init class
         self.spi = spidev.SpiDev()
         self.spi_lock = RLock()
@@ -251,11 +280,25 @@ class RF95:
         self.rx_good = 0      # rx packets recv
         self.rx_buf_valid = False
         self._using_hf_port = None
+        ####################################################################################
+        # AES INSERTED VARIABLES
+        self.address = address  #(AES)
+        self.rxHeaderTo = 0
+        self.rxHeaderFrom = 0
+        self.rxHeaderId = 0
+        self.rxHeaderFlags = 0
+        self.txHeaderTo = 0
+        self.txHeaderFrom = address
+        self.txHeaderId = 0
+        self.txHeaderFlags = 0
+        self.promiscuousMode = promiscuousMode
+        ####################################################################################
 
     def init(self):
         # open SPI and initialize RF95
         self.spi.open(0, self.cs)
-        self.spi.max_speed_hz = 488000
+        #self.spi.max_speed_hz = 488000
+        self.spi.max_speed_hz = 30000
         self.spi.close()
 
         # set interrupt pin
@@ -304,6 +347,21 @@ class RF95:
             self.spi_write(REG_0D_FIFO_ADDR_PTR, self.spi_read(REG_10_FIFO_RX_CURRENT_ADDR))
             self.buf = self.spi_read_data(REG_00_FIFO, length)
             self.buflen = length
+
+            ####################################################################################
+            # AES - REMOVE FIRST 4 BYTES AND LAST BYTE (HEADER)
+            # AND ASSIGN TO HEADER VARIABLES
+            self.rxHeaderTo=self.buf.pop(0)
+            self.rxHeaderFrom=self.buf.pop(0)
+            self.rxHeaderId=self.buf.pop(0)
+            self.rxHeaderFlags=self.buf.pop(0)
+            self.buf.pop()
+            if (self.rxHeaderTo != RH_BROADCAST_ADDRESS and self.rxHeaderTo != self.address and self.promiscuousMode==False):
+                self.clear_rx_buf()
+                self.buflen = 0
+                return
+            ####################################################################################
+                
             # clear IRQ flags
             self.spi_write(REG_12_IRQ_FLAGS, 0xff)
 
@@ -421,10 +479,8 @@ class RF95:
     def set_tx_power(self, power):
         if power > 23:
             power = 23
-
         if power < 5:
             power = 5
-
         # A_DAC_ENABLE actually adds about 3dBm to all
         # power levels. We will us it for 21, 22 and 23dBm
         if power > 20:
@@ -432,7 +488,6 @@ class RF95:
             power = power - 3
         else:
             self.spi_write(REG_4D_PA_DAC, PA_DAC_DISABLE)
-
         self.spi_write(REG_09_PA_CONFIG, PA_SELECT | (power - 5))
 
     # set a default mode
@@ -440,7 +495,6 @@ class RF95:
         self.spi_write(REG_1D_MODEM_CONFIG1, config[0])
         self.spi_write(REG_1E_MODEM_CONFIG2, config[1])
         self.spi_write(REG_26_MODEM_CONFIG3, config[2])
-
     # set custom mode
     def set_modem_config_custom(self,
         bandwidth = BW_125KHZ,
@@ -463,7 +517,7 @@ class RF95:
         self.spi_write(REG_21_PREAMBLE_LSB, length & 0xff)
 
     # send data list
-    def send(self, data):
+    def send(self, data, txAddress):
         if len(data) > MAX_MESSAGE_LEN:
             return False
 
@@ -472,10 +526,16 @@ class RF95:
         # beggining of FIFO
         # self.spi_write(REG_0E_FIFO_TX_BASE_ADDR, 0)
         self.spi_write(REG_0D_FIFO_ADDR_PTR, 0)
+        
+        self.spi_write(REG_00_FIFO_ADDR_PTR, txAddress)
+        self.spi_write(REG_00_FIFO_ADDR_PTR, self.txHeaderFrom)
+        self.spi_write(REG_00_FIFO_ADDR_PTR, self.txHeaderId)
+        self.spi_write(REG_00_FIFO_ADDR_PTR, self.txHeaderFlags)
+        
 
         # write data
-        self.spi_write_data(REG_00_FIFO, data)
-        self.spi_write(REG_22_PAYLOAD_LENGTH, len(data))
+        self.spi_write_data(REG_00_FIFO_ADDR_PTR, data)
+        self.spi_write(REG_22_PAYLOAD_LENGTH, (len(data)+RH_RF95_HEADER_LEN))
 
         # put radio in TX mode
         self.set_mode_tx()
@@ -509,9 +569,19 @@ class RF95:
     def recv(self):
         if not self.available():
             return False
-        data = self.buf
+        
+        #data = self.buf
+
+
         self.clear_rx_buf()
-        return data
+        return self.buf
+    
+    def resetRF95(self):
+      GPIO.output(self.reset_pin, GPIO.LOW)
+      time.sleep(0.0001)
+      GPIO.output(self.reset_pin, GPIO.HIGH)
+      time.sleep(0.005)     
+
 
     # cleans all GPIOs, etc
     def cleanup(self):
