@@ -3,6 +3,7 @@ import faulthandler; faulthandler.enable()
 import sys, signal
 import time
 import datetime
+import crc16
 
 from rf95 import RF95, Bw31_25Cr48Sf512
 
@@ -22,7 +23,36 @@ def reset_RF95():
     rf95.init()
     return time.time()
     pass
-    
+
+"""
+char* encryptDecrypt(char *toEncrypt,uint8_t sizeData) 
+{
+    char key[8] = {'1', 'q', '2','w','3','e','4','r'}; //Any chars will work
+    char* output = toEncrypt;
+    int i =0;
+    for (i = 0; i < sizeData; i++)
+        output[i] = toEncrypt[i] ^ key[i % (sizeof(key) / sizeof(char))];
+    return output;
+}
+"""
+def encryptDecrypt(_data,datalen):
+  key = ('1', 'q', '2','w','3','e','4','r')
+  
+  #print("\nKEY type", type(key))
+ 
+  i=0
+  #print(key[int(i % (len(key)/8))])
+
+  output=_data
+  while datalen > i:
+    keyValue = ord(key[int(i % len(key))])
+    output[i]=_data[i] ^ keyValue
+    i +=1
+
+  return output
+
+
+
 if __name__ == "__main__":
     rf95 = RF95(0, int_pin=25, reset_pin=22, address=100,promiscuousMode=True)
     rf95.set_frequency(437)
@@ -51,16 +81,19 @@ if __name__ == "__main__":
         pass
       
 
-      if not resetFlag:
-        print("got Data from ",rf95.rxHeaderFrom," | data = ",end="")
+      if not resetFlag: 
         data = rf95.recv()
-        for i in data:
+        data.pop()
+        print("got Data from ",rf95.rxHeaderFrom,"size = ", len(data)," | data = ",end="")
+        decypt = encryptDecrypt(data,len(data))
+        for i in decypt:
           print(chr(i), end="")
         
         
         timeVar=datetime.datetime.now()
-        print("| @",timeVar.strftime("%X"))
-       
+        print("| @",timeVar.strftime("%X")," - CRC ", hex(crc16.crc16xmodem(bytes(data))))
+        
+
         lastReceived = time.time()
      
       resetFlag = False

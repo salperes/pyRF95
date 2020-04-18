@@ -263,7 +263,7 @@ RH_BROADCAST_ADDRESS = 0xff
 RH_RF95_HEADER_LEN = 4
 
 class RF95:
-    def __init__(self, cs=0, int_pin=25, reset_pin=None, address=0,promiscuousMode=False):
+    def __init__(self, cs=0, int_pin=25, reset_pin=None, address=0,promiscuousMode=False, modem_config=Bw125Cr45Sf128):
         # init class
         self.spi = spidev.SpiDev()
         self.spi_lock = RLock()
@@ -292,6 +292,7 @@ class RF95:
         self.txHeaderId = 0
         self.txHeaderFlags = 0
         self.promiscuousMode = promiscuousMode
+        self.modem_config = modem_config
         ####################################################################################
 
     def init(self):
@@ -329,7 +330,7 @@ class RF95:
         # default mode
         self.set_mode_idle()
 
-        self.set_modem_config(Bw125Cr45Sf128)
+        self.set_modem_config(self.modem_config)
         self.set_preamble_length(8)
 
         return True
@@ -355,7 +356,7 @@ class RF95:
             self.rxHeaderFrom=self.buf.pop(0)
             self.rxHeaderId=self.buf.pop(0)
             self.rxHeaderFlags=self.buf.pop(0)
-            self.buf.pop()
+            #self.buf.pop()
             if (self.rxHeaderTo != RH_BROADCAST_ADDRESS and self.rxHeaderTo != self.address and self.promiscuousMode==False):
                 self.clear_rx_buf()
                 self.buflen = 0
